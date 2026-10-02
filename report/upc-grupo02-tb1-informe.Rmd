@@ -2,10 +2,11 @@
 title: "TB1: Análisis EDA - Hotel Booking Demand"
 subtitle: "Fundamentos de Data Science | Grupo 2"
 author: "Grupo 2 
-- INTEGRANTES:
-Chavez Pino, Paula Brenda
-Macalupu Marchan, Yeissen Beckam
-Quispe Valdez, Elim Zabdi
+- Integrantes:
+Chavez Pino, Paula Brenda |
+ Macalupu Marchan, Yeissen Beckam |
+ Quispe Valdez, Elim Zabdi |
+ Cárdenas Cabrera, Ángel David
 "
 date: "`r format(Sys.Date(), '%d/%m/%Y')`"
 output:

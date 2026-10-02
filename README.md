@@ -10,6 +10,7 @@ El proyecto realiza un análisis exploratorio de datos (EDA) sobre el dataset **
 |   1 | Chavez Pino, Paula Brenda        |
 |   2 | Macalupu Marchan, Yeissen Beckam |
 |   3 | Quispe Valdez, Elim Zabdi        |
+|   4 | Cárdenas Cabrera, Ángel David    |
 
 **Grupo:** 2
 
