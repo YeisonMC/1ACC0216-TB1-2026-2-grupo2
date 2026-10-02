@@ -1,0 +1,945 @@
+---
+title: "TB1: Análisis EDA - Hotel Booking Demand"
+subtitle: "Fundamentos de Data Science | Grupo 2"
+author: "Grupo 2 
+- INTEGRANTES:
+Chavez Pino, Paula Brenda
+Macalupu Marchan, Yeissen Beckam
+Quispe Valdez, Elim Zabdi
+"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  fig.width = 8,
+  fig.height = 5
+)
+
+options(scipen = 999)
+
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(knitr)
+```
+
+# Objetivo y audiencia
+
+El objetivo de este informe es realizar un análisis exploratorio del dataset **Hotel Booking Demand**, con énfasis en la duración de las estancias y en las características de las reservas que incluyen niños y/o bebés.
+
+El análisis puede ser útil para áreas como **gerencia de operaciones**, **reservas**, **marketing** y **revenue management**, ya que permite comprender patrones de estancia, composición de huéspedes, cancelaciones y comportamiento temporal de las reservas.
+
+## Preguntas analíticas
+
+1. **¿Cómo se distribuye y compara la duración total de la estancia entre las reservas de City Hotel y Resort Hotel?**
+2. **¿Qué características presentan las reservas con niños y/o bebés en relación con el tipo de hotel, duración de estancia, cantidad de adultos, tipo de cliente y cancelación?**
+
+# Descripción del dataset
+
+El archivo `hotel_bookings.csv` contiene información de reservas realizadas en **City Hotel** y **Resort Hotel**. Incluye variables relacionadas con cancelaciones, fechas de llegada, anticipación de la reserva, duración de la estancia, huéspedes, segmentos de mercado, tipo de cliente, tarifa diaria promedio y otras características de la reserva.
+
+```{r carga-datos}
+archivo_datos <- "data/hotel_bookings.csv"
+
+if (!file.exists(archivo_datos)) {
+  stop("No se encontró el archivo data/hotel_bookings.csv. Verifique que el Rmd se ejecute desde la carpeta raíz del proyecto TB1.")
+}
+
+hotel <- read.table(
+  archivo_datos,
+  header = TRUE,
+  sep = ",",
+  dec = ".",
+  na.strings = c("NA", "NULL"),
+  stringsAsFactors = FALSE
+)
+
+dimensiones <- tibble(
+  Registros = nrow(hotel),
+  Variables = ncol(hotel)
+)
+
+kable(
+  dimensiones,
+  caption = "Dimensiones iniciales del dataset"
+)
+```
+
+El dataset original contiene **`r nrow(hotel)` registros** y **`r ncol(hotel)` variables**.
+
+```{r muestra-datos}
+muestra <- hotel |>
+  select(
+    hotel,
+    is_canceled,
+    lead_time,
+    arrival_date_year,
+    arrival_date_month,
+    stays_in_weekend_nights,
+    stays_in_week_nights,
+    adults,
+    children,
+    babies,
+    adr
+  ) |>
+  head(6)
+
+kable(
+  muestra,
+  caption = "Muestra de registros del dataset"
+)
+```
+
+# Metodología y preparación de los datos
+
+El análisis se desarrolló en cuatro etapas:
+
+1. Revisión de **calidad de datos**: completitud, unicidad, consistencia, validez y exactitud cuando fue posible.
+2. **Preparación y transformación** sin modificar el dataset original.
+3. Análisis **univariado, bivariado, multivariado y temporal**.
+4. Síntesis de **hallazgos, conclusiones, recomendaciones y limitaciones**.
+
+## Calidad de los datos
+
+```{r calidad-completitud}
+tabla_faltantes <- hotel |>
+  summarise(
+    across(
+      everything(),
+      ~ sum(is.na(.))
+    )
+  ) |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "Variable",
+    values_to = "Faltantes"
+  ) |>
+  mutate(
+    Porcentaje = round(
+      Faltantes / nrow(hotel) * 100,
+      2
+    )
+  ) |>
+  filter(Faltantes > 0) |>
+  arrange(desc(Faltantes))
+
+kable(
+  tabla_faltantes,
+  caption = "Valores faltantes identificados en el dataset"
+)
+```
+
+Se identificaron valores faltantes principalmente en `company`, `agent`, `country` y `children`. Estos valores no fueron imputados de manera arbitraria.
+
+```{r calidad-unicidad-validez}
+duplicados <- sum(duplicated(hotel))
+
+reservas_sin_huespedes <- sum(
+  hotel$adults +
+    replace_na(hotel$children, 0) +
+    hotel$babies == 0
+)
+
+adr_negativos <- sum(
+  hotel$adr < 0,
+  na.rm = TRUE
+)
+
+resumen_calidad <- tibble(
+  Indicador = c(
+    "Registros exactamente duplicados",
+    "Reservas sin huéspedes",
+    "Registros con ADR negativo"
+  ),
+  Cantidad = c(
+    duplicados,
+    reservas_sin_huespedes,
+    adr_negativos
+  )
+)
+
+kable(
+  resumen_calidad,
+  caption = "Principales problemas de calidad detectados"
+)
+```
+
+Se detectaron **`r duplicados` registros exactamente repetidos**, **`r reservas_sin_huespedes` reservas sin huéspedes** y **`r adr_negativos` registro(s) con tarifa diaria promedio negativa**. La exactitud no pudo verificarse directamente debido a que no se dispone de una fuente externa o regla de negocio para contrastar los valores.
+
+## Preparación y transformación
+
+Se creó una nueva versión denominada `hotel_limpio`. El dataset original se conserva sin modificaciones.
+
+```{r preparacion-datos}
+hotel_limpio <- hotel |>
+  distinct() |>
+  filter(
+    adults +
+      replace_na(children, 0) +
+      babies > 0
+  ) |>
+  mutate(
+    reservation_status_date = as.Date(
+      reservation_status_date
+    ),
+
+    arrival_month_num = match(
+      arrival_date_month,
+      month.name
+    ),
+
+    arrival_date = make_date(
+      arrival_date_year,
+      arrival_month_num,
+      arrival_date_day_of_month
+    ),
+
+    periodo = floor_date(
+      arrival_date,
+      unit = "month"
+    ),
+
+    total_nights =
+      stays_in_weekend_nights +
+      stays_in_week_nights,
+
+    con_menores = case_when(
+      children > 0 | babies > 0 ~ "Con niños/bebés",
+      children == 0 & babies == 0 ~ "Sin niños/bebés",
+      TRUE ~ NA_character_
+    ),
+
+    hotel = factor(hotel),
+
+    arrival_date_month = factor(
+      arrival_date_month,
+      levels = month.name,
+      ordered = TRUE
+    ),
+
+    is_canceled = factor(
+      is_canceled,
+      levels = c(0, 1),
+      labels = c("No", "Sí")
+    ),
+
+    is_repeated_guest = factor(
+      is_repeated_guest,
+      levels = c(0, 1),
+      labels = c("No", "Sí")
+    ),
+
+    meal = factor(meal),
+    country = factor(country),
+    market_segment = factor(market_segment),
+    distribution_channel = factor(distribution_channel),
+    reserved_room_type = factor(reserved_room_type),
+    assigned_room_type = factor(assigned_room_type),
+    deposit_type = factor(deposit_type),
+    agent = factor(agent),
+    company = factor(company),
+    customer_type = factor(customer_type),
+    reservation_status = factor(reservation_status),
+
+    con_menores = factor(
+      con_menores,
+      levels = c(
+        "Sin niños/bebés",
+        "Con niños/bebés"
+      )
+    )
+  )
+
+dimensiones_preparadas <- tibble(
+  Registros = nrow(hotel_limpio),
+  Variables = ncol(hotel_limpio)
+)
+
+kable(
+  dimensiones_preparadas,
+  caption = "Dimensiones del dataset preparado"
+)
+```
+
+Después de la preparación, `hotel_limpio` contiene **`r nrow(hotel_limpio)` registros**.
+
+```{r guardar-dataset-preparado, include=FALSE}
+write.csv(
+  hotel_limpio,
+  "data/hotel_bookings_preparado.csv",
+  row.names = FALSE
+)
+```
+
+# Resultados
+
+## Duración de las estancias
+
+```{r resumen-duracion}
+resumen_duracion <- hotel_limpio |>
+  summarise(
+    Media = round(mean(total_nights), 2),
+    Mediana = median(total_nights),
+    Q1 = quantile(total_nights, 0.25),
+    Q3 = quantile(total_nights, 0.75),
+    Mínimo = min(total_nights),
+    Máximo = max(total_nights),
+    `Desviación estándar` = round(sd(total_nights), 2)
+  )
+
+porcentaje_hasta_5 <- round(
+  mean(
+    hotel_limpio$total_nights <= 5
+  ) * 100,
+  1
+)
+
+kable(
+  resumen_duracion,
+  caption = "Medidas descriptivas de la duración de la estancia"
+)
+```
+
+La duración promedio es de **`r resumen_duracion$Media` noches**, con una mediana de **`r resumen_duracion$Mediana` noches**. El 50 % central de las reservas se encuentra entre **`r resumen_duracion$Q1` y `r resumen_duracion$Q3` noches**. Además, **`r porcentaje_hasta_5` % de las reservas presenta una estancia de hasta 5 noches**.
+
+```{r grafico-duracion-estancias, fig.cap="Distribución del número total de noches por reserva"}
+ggplot(
+  hotel_limpio,
+  aes(x = total_nights)
+) +
+  geom_histogram(
+    binwidth = 1,
+    boundary = 0,
+    fill = "#4E79A7",
+    color = "white"
+  ) +
+  scale_x_continuous(
+    breaks = seq(
+      0,
+      max(
+        hotel_limpio$total_nights,
+        na.rm = TRUE
+      ),
+      5
+    )
+  ) +
+  scale_y_continuous(
+    labels = comma
+  ) +
+  labs(
+    title = sprintf(
+      "El %.1f %% de las reservas presenta estancias de hasta 5 noches",
+      porcentaje_hasta_5
+    ),
+    x = "Número total de noches",
+    y = "Cantidad de reservas"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+```
+
+## Reservas con niños o bebés
+
+```{r resumen-reservas-menores}
+tabla_menores <- hotel_limpio |>
+  filter(
+    !is.na(con_menores)
+  ) |>
+  count(
+    con_menores,
+    name = "Reservas"
+  ) |>
+  mutate(
+    Proporción = Reservas / sum(Reservas),
+    Porcentaje = round(Proporción * 100, 1)
+  )
+
+kable(
+  tabla_menores |>
+    select(
+      `Composición de la reserva` = con_menores,
+      Reservas,
+      Porcentaje
+    ),
+  caption = "Reservas según presencia de niños o bebés"
+)
+```
+
+Las reservas que incluyen niños o bebés representan aproximadamente **`r tabla_menores$Porcentaje[tabla_menores$con_menores == "Con niños/bebés"]` %** de los registros con información disponible sobre esta característica.
+
+```{r grafico-reservas-menores, fig.cap="Proporción de reservas con y sin niños o bebés"}
+ggplot(
+  tabla_menores,
+  aes(
+    x = con_menores,
+    y = Proporción,
+    fill = con_menores
+  )
+) +
+  geom_col(
+    width = 0.6,
+    show.legend = FALSE
+  ) +
+  geom_text(
+    aes(
+      label = percent(
+        Proporción,
+        accuracy = 0.1
+      )
+    ),
+    vjust = -0.4,
+    size = 4
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Sin niños/bebés" = "#F8766D",
+      "Con niños/bebés" = "#00BFC4"
+    )
+  ) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    limits = c(0, 1)
+  ) +
+  labs(
+    title = sprintf(
+      "Solo el %.1f %% de las reservas incluye niños o bebés",
+      tabla_menores$Porcentaje[
+        tabla_menores$con_menores == "Con niños/bebés"
+      ]
+    ),
+    x = NULL,
+    y = "Porcentaje de reservas"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+```
+
+## Valores atípicos
+
+Para identificar posibles valores atípicos se utilizó el criterio del rango intercuartílico (IQR). Un valor atípico no se considera automáticamente un error; por ello, los casos identificados se conservaron para revisión.
+
+```{r calculo-valores-atipicos}
+detectar_atipicos <- function(x) {
+
+  q1 <- quantile(
+    x,
+    0.25,
+    na.rm = TRUE
+  )
+
+  q3 <- quantile(
+    x,
+    0.75,
+    na.rm = TRUE
+  )
+
+  iqr <- q3 - q1
+
+  limite_inferior <- q1 - 1.5 * iqr
+  limite_superior <- q3 + 1.5 * iqr
+
+  sum(
+    x < limite_inferior |
+      x > limite_superior,
+    na.rm = TRUE
+  )
+}
+
+tabla_atipicos <- tibble(
+  Variable = c(
+    "Anticipación de la reserva",
+    "Noches totales",
+    "Tarifa diaria promedio"
+  ),
+
+  `Posibles valores atípicos` = c(
+    detectar_atipicos(hotel_limpio$lead_time),
+    detectar_atipicos(hotel_limpio$total_nights),
+    detectar_atipicos(hotel_limpio$adr)
+  ),
+
+  Mínimo = c(
+    min(hotel_limpio$lead_time, na.rm = TRUE),
+    min(hotel_limpio$total_nights, na.rm = TRUE),
+    min(hotel_limpio$adr, na.rm = TRUE)
+  ),
+
+  Máximo = c(
+    max(hotel_limpio$lead_time, na.rm = TRUE),
+    max(hotel_limpio$total_nights, na.rm = TRUE),
+    max(hotel_limpio$adr, na.rm = TRUE)
+  )
+)
+
+kable(
+  tabla_atipicos,
+  caption = "Posibles valores atípicos según el criterio IQR"
+)
+```
+
+Se identificaron **`r tabla_atipicos[["Posibles valores atípicos"]][1]` posibles valores atípicos en la anticipación de la reserva, **`r tabla_atipicos[["Posibles valores atípicos"]][2]` en las noches totales y **`r tabla_atipicos[["Posibles valores atípicos"]][3]` en la tarifa diaria promedio.
+
+```{r grafico-atipicos-anticipacion, fig.cap="Valores extremos en la anticipación de la reserva"}
+ggplot(
+  hotel_limpio,
+  aes(
+    x = "",
+    y = lead_time
+  )
+) +
+  geom_boxplot(
+    fill = "#A0CBE8",
+    outlier.alpha = 0.3
+  ) +
+  labs(
+    title = "Valores extremos en la anticipación de la reserva",
+    x = NULL,
+    y = "Días de anticipación"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title = element_text(face = "bold")
+  )
+```
+
+```{r grafico-atipicos-noches, fig.cap="Valores extremos en la duración de la estancia"}
+ggplot(
+  hotel_limpio,
+  aes(
+    x = "",
+    y = total_nights
+  )
+) +
+  geom_boxplot(
+    fill = "#A0CBE8",
+    outlier.alpha = 0.3
+  ) +
+  labs(
+    title = "Valores extremos en la duración de la estancia",
+    x = NULL,
+    y = "Número total de noches"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title = element_text(face = "bold")
+  )
+```
+
+```{r grafico-atipicos-adr, fig.cap="Valores extremos en la tarifa diaria promedio"}
+ggplot(
+  hotel_limpio,
+  aes(
+    x = "",
+    y = adr
+  )
+) +
+  geom_boxplot(
+    fill = "#A0CBE8",
+    outlier.alpha = 0.3
+  ) +
+  labs(
+    title = "Valores extremos en la tarifa diaria promedio",
+    x = NULL,
+    y = "Tarifa diaria promedio"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title = element_text(face = "bold")
+  )
+```
+
+En particular, `adr` presenta un valor mínimo de **`r min(hotel_limpio$adr, na.rm = TRUE)`**, previamente identificado como un problema de validez que requiere revisión.
+
+## Duración de estancia según tipo de hotel
+
+```{r resumen-estancia-hotel}
+resumen_estancia_hotel <- hotel_limpio |>
+  group_by(hotel) |>
+  summarise(
+    Reservas = n(),
+    `Media de noches` = round(mean(total_nights), 2),
+    `Mediana de noches` = median(total_nights),
+    Q1 = quantile(total_nights, 0.25),
+    Q3 = quantile(total_nights, 0.75),
+    .groups = "drop"
+  )
+
+kable(
+  resumen_estancia_hotel,
+  caption = "Duración de la estancia según tipo de hotel"
+)
+```
+
+Las reservas de **Resort Hotel** presentan estancias más prolongadas que las de **City Hotel**. Resort Hotel registra una media de **`r resumen_estancia_hotel[["Media de noches"]][resumen_estancia_hotel$hotel == "Resort Hotel"]` noches**, mientras que City Hotel registra **`r resumen_estancia_hotel[["Media de noches"]][resumen_estancia_hotel$hotel == "City Hotel"]` noches**.
+
+```{r grafico-estancia-hotel, fig.cap="Duración de la estancia según tipo de hotel"}
+ggplot(
+  hotel_limpio,
+  aes(
+    x = hotel,
+    y = total_nights,
+    fill = hotel
+  )
+) +
+  geom_boxplot(
+    width = 0.55,
+    outlier.alpha = 0.25,
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(
+    values = c(
+      "City Hotel" = "#F8766D",
+      "Resort Hotel" = "#4E79A7"
+    )
+  ) +
+  labs(
+    title = "Resort Hotel registra estancias más prolongadas que City Hotel",
+    x = NULL,
+    y = "Número total de noches"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+```
+
+## Cancelaciones según tipo de hotel y presencia de menores
+
+```{r resumen-cancelaciones-menores}
+resumen_cancelacion <- hotel_limpio |>
+  filter(
+    !is.na(con_menores)
+  ) |>
+  mutate(
+    con_menores = factor(
+      con_menores,
+      levels = c(
+        "Con niños/bebés",
+        "Sin niños/bebés"
+      )
+    )
+  ) |>
+  group_by(
+    hotel,
+    con_menores
+  ) |>
+  summarise(
+    Reservas = n(),
+    Canceladas = sum(
+      is_canceled == "Sí"
+    ),
+    `Tasa de cancelación` =
+      Canceladas / Reservas,
+    .groups = "drop"
+  )
+
+tabla_cancelacion <- resumen_cancelacion |>
+  mutate(
+    `Tasa de cancelación (%)` =
+      round(
+        `Tasa de cancelación` * 100,
+        2
+      )
+  ) |>
+  select(
+    Hotel = hotel,
+    `Tipo de reserva` = con_menores,
+    `Tasa de cancelación (%)`
+  )
+
+kable(
+  tabla_cancelacion,
+  caption = "Cancelaciones según tipo de hotel y presencia de menores"
+)
+```
+
+```{r grafico-cancelaciones-menores, fig.cap="Tasa de cancelación según hotel y presencia de niños o bebés"}
+ggplot(
+  resumen_cancelacion,
+  aes(
+    x = hotel,
+    y = `Tasa de cancelación`,
+    fill = con_menores
+  )
+) +
+  geom_col(
+    position = position_dodge(width = 0.75),
+    width = 0.65
+  ) +
+  geom_text(
+    aes(
+      label = percent(
+        `Tasa de cancelación`,
+        accuracy = 0.1
+      )
+    ),
+    position = position_dodge(width = 0.75),
+    vjust = -0.4,
+    size = 3.8
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Con niños/bebés" = "#F8766D",
+      "Sin niños/bebés" = "#00BFC4"
+    )
+  ) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    limits = c(0, 0.40)
+  ) +
+  labs(
+    title = "Las reservas con menores registran una mayor tasa de cancelación en ambos hoteles",
+    x = "Tipo de hotel",
+    y = "Porcentaje de reservas canceladas",
+    fill = "Composición de la reserva"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+```
+
+La comparación muestra una **asociación descriptiva** entre la presencia de menores y una mayor proporción de cancelaciones en ambos hoteles. Este resultado no implica causalidad.
+
+## Perfil de las reservas con niños o bebés
+
+```{r perfil-reservas-menores}
+reservas_menores <- hotel_limpio |>
+  filter(
+    con_menores == "Con niños/bebés"
+  )
+
+perfil_menores <- reservas_menores |>
+  summarise(
+    Reservas = n(),
+    `Media de noches` = round(
+      mean(total_nights),
+      2
+    ),
+    `Mediana de noches` = median(
+      total_nights
+    ),
+    `Promedio de adultos` = round(
+      mean(adults),
+      2
+    ),
+    `% clientes Transient` = round(
+      mean(
+        customer_type == "Transient"
+      ) * 100,
+      2
+    ),
+    `% reservas canceladas` = round(
+      mean(
+        is_canceled == "Sí"
+      ) * 100,
+      2
+    )
+  )
+
+hotel_menores <- reservas_menores |>
+  count(
+    hotel,
+    name = "Reservas"
+  ) |>
+  mutate(
+    Porcentaje = round(
+      Reservas / sum(Reservas) * 100,
+      2
+    )
+  )
+
+kable(
+  perfil_menores,
+  caption = "Características de las reservas con niños o bebés"
+)
+
+kable(
+  hotel_menores,
+  caption = "Distribución de las reservas con menores según tipo de hotel"
+)
+```
+
+Se identificaron **`r perfil_menores$Reservas` reservas con niños y/o bebés**. La estancia promedio es de **`r perfil_menores[["Media de noches"]]` noches**, con aproximadamente **`r perfil_menores[["Promedio de adultos"]]` adultos por reserva**. El tipo de cliente predominante es `Transient`.
+
+## Evolución temporal de las reservas
+
+```{r resumen-temporal}
+reservas_mes <- hotel_limpio |>
+  count(
+    periodo,
+    hotel,
+    name = "reservas"
+  )
+
+resumen_temporal <- reservas_mes |>
+  group_by(hotel) |>
+  summarise(
+    mes_maximo =
+      periodo[which.max(reservas)],
+    max_reservas =
+      max(reservas),
+    .groups = "drop"
+  )
+
+comparacion_mensual <- reservas_mes |>
+  pivot_wider(
+    names_from = hotel,
+    values_from = reservas,
+    values_fill = 0
+  ) |>
+  summarise(
+    meses_observados = n(),
+    meses_city_superior = sum(
+      `City Hotel` > `Resort Hotel`
+    )
+  )
+
+picos_reservas <- reservas_mes |>
+  group_by(hotel) |>
+  slice_max(
+    reservas,
+    n = 1,
+    with_ties = FALSE
+  ) |>
+  ungroup()
+
+kable(
+  resumen_temporal,
+  caption = "Mes de mayor cantidad de reservas por tipo de hotel"
+)
+```
+
+City Hotel registra una mayor cantidad de reservas que Resort Hotel en **`r comparacion_mensual$meses_city_superior` de los `r comparacion_mensual$meses_observados` meses observados**.
+
+```{r grafico-evolucion-reservas, fig.cap="Evolución mensual de las reservas según tipo de hotel"}
+titulo_temporal <- sprintf(
+  "City Hotel registra más reservas en %d de los %d meses observados",
+  comparacion_mensual$meses_city_superior,
+  comparacion_mensual$meses_observados
+)
+
+ggplot(
+  reservas_mes,
+  aes(
+    x = periodo,
+    y = reservas,
+    color = hotel,
+    linetype = hotel
+  )
+) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  geom_text(
+    data = picos_reservas,
+    aes(label = reservas),
+    vjust = -0.8,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(
+    values = c(
+      "City Hotel" = "#4E79A7",
+      "Resort Hotel" = "#E15759"
+    )
+  ) +
+  scale_x_date(
+    date_breaks = "3 months",
+    date_labels = "%b-%Y"
+  ) +
+  scale_y_continuous(
+    labels = comma,
+    expand = expansion(
+      mult = c(0, 0.08)
+    )
+  ) +
+  labs(
+    title = titulo_temporal,
+    x = "Mes de llegada",
+    y = "Cantidad de reservas",
+    color = "Tipo de hotel",
+    linetype = "Tipo de hotel"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.title = element_text(face = "bold"),
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    )
+  )
+```
+
+Debido a que el dataset comienza en julio de 2015 y finaliza en agosto de 2017, no se comparan totales anuales completos entre 2015, 2016 y 2017.
+
+# Respuesta a las preguntas analíticas
+
+## Pregunta analítica 1
+
+**¿Cómo se distribuye y compara la duración total de la estancia entre las reservas de City Hotel y Resort Hotel?**
+
+Las reservas de Resort Hotel presentan estancias más prolongadas. Resort Hotel registra una media de **`r resumen_estancia_hotel[["Media de noches"]][resumen_estancia_hotel$hotel == "Resort Hotel"]` noches** y una mediana de **`r resumen_estancia_hotel[["Mediana de noches"]][resumen_estancia_hotel$hotel == "Resort Hotel"]` noches**, mientras que City Hotel presenta una media de **`r resumen_estancia_hotel[["Media de noches"]][resumen_estancia_hotel$hotel == "City Hotel"]` noches** y una mediana de **`r resumen_estancia_hotel[["Mediana de noches"]][resumen_estancia_hotel$hotel == "City Hotel"]` noches**.
+
+## Pregunta analítica 2
+
+**¿Qué características presentan las reservas con niños y/o bebés en relación con el tipo de hotel, duración de estancia, cantidad de adultos, tipo de cliente y cancelación?**
+
+Las reservas con niños o bebés representan aproximadamente el **`r tabla_menores$Porcentaje[tabla_menores$con_menores == "Con niños/bebés"]` %** de las reservas con información disponible sobre esta característica. Presentan una estancia promedio cercana a **`r perfil_menores[["Media de noches"]]` noches**, alrededor de **`r perfil_menores[["Promedio de adultos"]]` adultos por reserva** y una alta presencia de clientes `Transient`. Además, se observa una mayor proporción de cancelaciones en las reservas con menores que en las reservas sin menores en ambos tipos de hotel.
+
+# Hallazgos principales
+
+1. **El `r porcentaje_hasta_5` % de las reservas presenta estancias de hasta 5 noches**, por lo que las estancias cortas constituyen el comportamiento más frecuente.
+2. **Resort Hotel registra estancias más prolongadas que City Hotel**, tanto en promedio como en mediana.
+3. **Solo alrededor del `r tabla_menores$Porcentaje[tabla_menores$con_menores == "Con niños/bebés"]` % de las reservas incluye niños o bebés**, por lo que las reservas familiares representan un segmento menor del conjunto analizado.
+4. **Las reservas con menores presentan una mayor tasa de cancelación en ambos hoteles** que las reservas sin menores.
+5. **City Hotel registra más reservas en `r comparacion_mensual$meses_city_superior` de los `r comparacion_mensual$meses_observados` meses observados**.
+
+# Conclusiones
+
+- Las reservas hoteleras se concentran principalmente en estancias cortas.
+- Resort Hotel presenta estancias promedio y medianas superiores a las observadas en City Hotel.
+- Las reservas con niños o bebés representan aproximadamente una décima parte de los registros con información disponible sobre esta característica y se caracterizan por una estancia cercana a cuatro noches y aproximadamente dos adultos por reserva.
+- Las reservas con menores presentan una mayor proporción de cancelaciones en ambos hoteles; este resultado corresponde a una asociación descriptiva y no implica causalidad.
+- City Hotel concentra una mayor cantidad de reservas durante la mayoría de los meses observados.
+
+# Recomendaciones
+
+1. Considerar las diferencias en la duración de las estancias entre City Hotel y Resort Hotel al planificar recursos operativos, disponibilidad de habitaciones y servicios asociados a la permanencia de los huéspedes.
+2. Realizar un seguimiento específico de las reservas que incluyen niños o bebés, especialmente respecto a las cancelaciones, con el fin de identificar oportunidades para mejorar la gestión de este segmento.
+
+
+# Bibliografía
+
+- Datos.gob.es. (2021). *Guía práctica de introducción al análisis exploratorio de datos en R*. Gobierno de España.
+- Posit Software, PBC. (2024). *Transformación de datos con dplyr: guía rápida* [Hoja de referencia].
+- Posit Software, PBC. (2024). *Visualización de datos con ggplot2: guía rápida* [Hoja de referencia].
+- Wickham, H., & Grolemund, G. (2023). *R para ciencia de datos* [Versión en español].
+
+
